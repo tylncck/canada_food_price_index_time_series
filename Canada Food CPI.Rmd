@@ -1,0 +1,321 @@
+---
+title: "Food Price Index of Canada"
+subtitle: "Univariate Time Series Analysis to forecast future Food Price Index values"
+author: "O. Taylan Cicek, The University of Calgary"
+date: Jan 18, 2023
+output: html_notebook
+---
+
+# Introduction
+
+Food prices play an important role in the overall Consumer Price Index (CPI) calculations. Considering the CPI basket used to calculate inflation rate or CPI, proportion of food products is important. In addition, CPI is an overall generic calculation about price levels and it may not be relevant for all households. That's simply because for low income families, the proportion of food related spendings is higher compared to mid or high income families. Therefore, food price index deserves a special interest.
+
+In this analysis, I wanted to analyze characteristics of food price index (FPI) of Canada and build a model to forecast food price index values for 2023. This analysis is a simple time series analysis which only considers past values of food price index. In the following parts
+
+# Model Fitting
+
+## 1. Required Packages
+
+```{r warning=FALSE, message=FALSE}
+library(statcanR)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(forecast)
+library(tseries)
+library(ggTimeSeries)
+library(stringr)
+library(stats)
+library(gridExtra)
+library(FinTS)
+library(nortsTest)
+library(MTS)
+library(TSstudio)
+```
+
+## 2. Data Collection from Statistics Canada
+
+### 2.1. Data License
+
+The data used in the analysis is directly imported from Statistics Canada with an open license letting users to use, publish and freely distribute the dataset.
+
+### 2.2. Data Sharing API
+
+Statistics Canada has an API for data sharing and using the R package **statcanR**, data can be directly retrieved from StatCan by only using table id. The imported data is in normalized database table format and therefore there is no need to data transformation or wrangling.
+
+### 2.3. Data Collection
+
+Statistics Canada has ***Consumer Price Index, monthly, seasonally adjusted*** dataset, which contains overall CPI and price indexes for sub-categories like food. This dataset can be accessed with the table id = 18-10-0006-01.
+
+```{r warning=FALSE, message=FALSE}
+df = statcan_data('18-10-0006-01', 'eng')
+names(df) = str_replace_all(names(df), c(" " = "_"))
+fpi = df %>% 
+  filter(Products_and_product_groups == 'Food') %>% 
+  select(c(REF_DATE, VALUE))
+fpi = ts(fpi$VALUE, start=c(1992,1), frequency = 12)
+rm(df)
+```
+
+## 3. Data Visualization
+
+```{r}
+plot.ts(fpi,
+        main = 'Food Price Index of Canada',
+        sub = 'From 1992 to Present',
+        col = 'darkred',
+        xy.lines = TRUE,
+        xlab = 'Time',
+        ylab = 'Index Value',
+        lwd = 3)
+abline(reg=lm(fpi~time(fpi)), col = 'darkgrey', lwd = 2)
+```
+
+Above plot exhibits and obvious increasing trend for FPI, which can be seen with the fitted grey linear trend line. In addition, the changes in FPI are not constant. For some periods, the line is flatter compared to drastic increase period like 2021 and 2022.
+
+This dataset is seasonally adjusted but in the following part, I tried to decompose the FPI and get trend and seasonal components together with the random (residual) part.
+
+## **4. Decomposition of CPI**
+
+```{r}
+decomposed_fpi <- tslm(fpi ~ trend + fourier(fpi, 2))
+
+trend <- coef(decomposed_fpi)[1] + coef(decomposed_fpi)['trend']*seq_along(fpi)
+
+components <- cbind(
+  FPI = fpi,
+  trend = trend,
+  seasonal = fpi - trend - residuals(decomposed_fpi),
+  residuals = residuals(decomposed_fpi))
+autoplot(components, facet=TRUE)
+```
+
+There are 4 subplots in the above visual and the first one is the sum of the last three meaning that FPI has a trend, a seasonal and an unexplained residual component. This is interesting because I would not expect any seasonal component since the data was seasonally adjusted.
+
+Another interesting result is that we cannot only explain the variation in this time series with trend and seasonality: residuals seem to be non-random and for some periods, they appear to be autocorrelated.
+
+## 5. Distribution of Food Price Index
+
+### 5.1. Visuals
+
+```{r warning=FALSE, message=FALSE}
+hist(fpi,
+     freq = FALSE,
+     main = 'Histogram of Food Price Index',
+     xlab = 'Food Price Index',
+     col = 'darkred')
+```
+
+The distribution of FPI (as is) is not even close to normal distribution.
+
+```{r}
+hist(log(fpi),
+     freq = FALSE,
+     main = 'Histogram of log(Food Price Index)',
+     xlab = 'log(Food Price Index)',
+     col = 'darkgrey')
+```
+
+Above visual is the distribution of natural logartihm of FPI and even the log transformed version is not normally distributed.
+
+```{r}
+hist(diff(log(fpi)),
+     freq = FALSE,
+     main = 'Histogram of diff(log(Food Price Index))',
+     xlab = 'diff(log(Food Price Index))',
+     col = 'darkgrey')
+```
+
+In addition to the log transformation, the monthly differences in FPI were calculated and plotted in above visual. The distribution shape of the log differenced FPI is better than the former two trials and very close to normal.
+
+### 5.2. Statistical Tests for Normality
+
+Although visuals play great role in understanding the distribution of time series, formally statistical tests are required to check the normality of the variables. In the following part, I used Jarque-Bera Test to statistically check whether the time series is normally distributed or not. In these statistical tests, following hypotheses were used:
+
+$$
+\begin{align*} 
+H_0: & \text{The distribution of FPI IS NOT statistically different than normal distribution} \\
+H_A: & \text{The distribution of FPI IS statistically different than normal distribution}
+\end{align*}
+$$
+
+```{r}
+jarque.bera.test(fpi)
+```
+
+```{r}
+jarque.bera.test(log(fpi))
+```
+
+```{r}
+jarque.bera.test(diff(log(fpi)))
+```
+
+FPI, log(FPI) and diff(log(FPI)) were tested and all tests resulted in $p-value < \alpha = 0.05$ meaning the rejection of $H_0$, which states normal distribution of FPI. Therefore, the conclusion is that **the time series is not normally distributed**.
+
+## 6. Testing Stationary (White Noise)
+
+### 6.1. Visuals
+
+#### 6.1.1. Lag Plot to Check Autocorrelation
+
+```{r}
+gglagplot(x = log(fpi), lag=12, seasonal = TRUE) + 
+  scale_color_viridis_d(option = "A") +
+  theme_bw()
+```
+
+The scatterplot grid presented above indicates that log(FPI) is significantly correlated with its lags.
+
+```{r}
+gglagplot(x = diff(log(fpi)), lag=12, seasonal = TRUE) + 
+  scale_color_viridis_d(option = "A") +
+  theme_bw()
+```
+
+Instead of log(FPI), I used diff(log(FPI)) to check for autocorrelation. This time, the log differenced FPI showed no significant autocorrelation with lag values.
+
+#### 6.1.2. Autocorrelation and Partial Autocorrelation Plots (ACF & PACF)
+
+```{r}
+fpi_acf = ggAcf(log(fpi), lag.max = 50, plot = TRUE) + 
+  labs(title = "log(FPI) ACF")+
+  theme_classic()
+fpi_pacf = ggPacf(log(fpi), lag.max = 50, plot = TRUE) +
+  labs(title = "log(FPI) PACF")+
+  theme_classic()
+grid.arrange(fpi_acf, fpi_pacf, nrow = 1)
+```
+
+ACF and PACF are important visuals to check while fitting time series models. Considering the plotted ACF and PACF plotted above, I can state that log(FPI) follows a MA process instead of an AR process since bars in ACF slightly decreases with increasing lags but bars in PACF directly becomes insignificant after first one.
+
+### 6.2. Statistical Tests for Stationary (White Noise)
+
+Similar to the normality test, in addition to the visuals, I used statistical test to detect stationary (unit root). Following hypotheses were used in these tests.
+
+$$
+\begin{align*} 
+H_0: & \text{Non Stationary (Unit Root present)} \\
+H_A: & \text{Stationary (Unit Root NOT present)}
+\end{align*}
+$$
+
+```{r}
+adf.test(log(fpi), alternative = 'stationary')
+```
+
+```{r}
+adf.test(diff(log(fpi)), alternative = 'stationary')
+```
+
+Statistical test results supports the visuals discussed in the previous part:
+
+-   For log(FPI), the calculated $p-value > \alpha = 0.05$ meaning that $H_0$ cannot be rejected. The conclusion for log(FPI) is that it has unit root (or it is not stationary). This is not surprising since the original FPI data had a trend component *(refer to decomposition part discussed above).*
+
+-   For log differenced FPI, my conclusion is the opposite since the calculated $p-value < \alpha = 0.05$ meaning that $H_0$ must be be rejected. The conclusion for diff(log(FPI)) is that it does not have unit root (or it is stationary).
+
+In above part, I discussed about FPI (and log(FPI)) follow a MA process instead of an AR process. In addition to that, statistical test results discussed in this part also suggest that there will be an I component in the ARIMA process because with the integrated differencing, data become stationary.
+
+## 7. ARIMA (or SARIMA) Model
+
+### 7.1. Fitting the model
+
+A general ARIMA model requires three parameters:
+
+-   p for AR component: p refers to number of lag values to include in the model
+
+-   d for I component: d refers to differencing window
+
+-   q for MA component: q refers to the number of past residuals to include in the model.
+
+Remember, in the decomposition part, I discussed about the surprising seasonal component of FPI. Therefore, my expectation is that the fitted model will be SARIMA (seasonal ARIMA), which requires three additional parameters (P,D,Q same meaning with above parameters but this time seasonal).
+
+The optimal parameters can be decided with trials and then comparing the AIC or BIC values (the lowest should be chosen) of the models. However, auto.arima() function exactly does the same thing and therefore I prefer to use it to be practical.
+
+***Note:** Since differencing can be handled within the ARIMA (or SARIMA) process by setting d\>0, I used log(FPI) inside the function. auto.arima will choose a non-zero value for d to manage differencing.*
+
+```{r}
+ARIMA_fpi = auto.arima(log(fpi))
+summary(ARIMA_fpi)
+```
+
+Similar to my discussion in former sections of this paper, auto.arima() function resulted in a SARIMA(0,2,1)(0,0,1) model. As discussed above,
+
+-   There is no AR component
+
+-   There is I component with d = 2
+
+-   There is MA component with q = 1
+
+-   There is seasonal MA with Q = 1
+
+## 8. Model Diagnostics
+
+```{r}
+tsdiag(ARIMA_fpi)
+```
+
+The residual plot of the fitted model indicates signs of non-constant variance since there are picks in the residuals in some periods compared to other periods. This shows the variation in the residuals are not constant.
+
+```{r}
+checkresiduals(ARIMA_fpi, test = FALSE)
+```
+
+The ACF of residuals look acceptable and the distribution of residuals is close to normal distribution.
+
+```{r}
+autoplot(ARIMA_fpi)
+```
+
+All the dots are inside the circle, which is an indication of an acceptable model.
+
+```{r}
+archTest(residuals(ARIMA_fpi))
+```
+
+In order to test for heteroscedasticity, I used archTest from MTS package (which uses Ljung-Box test). The $p-value$ of the rank-based test is greater than $\alpha = 0.05$ but the normal test has a $p-value < \alpha = 0.05$.\
+$$
+\begin{align*} 
+H_0: & \text{No autocorrelation of residual squares (Residuals are random)} \\
+H_A: & \text{Autocorrelation of residual squares (Residuals are NOT random)}
+\end{align*}
+$$
+
+According to the package definition for archTest(), the rank series of the squared time series is than used to test the conditional heteroscedasticity. Our model is successful in terms of rank-based test model and therefore, we can make forecasts based on the existing model. However, the p-values are very close to the critical levels and therefore, there is a need for ARCH or GARCH models to predict the variance.
+
+# Forecasting
+
+```{r message=FALSE, warning=FALSE}
+fpi_forecast = forecast(ARIMA_fpi, h = 12, level = c(95,99))
+
+fpi_forecast$x = exp(fpi_forecast$x)
+fpi_forecast$mean = exp(fpi_forecast$mean)
+fpi_forecast$lower = exp(fpi_forecast$lower)
+fpi_forecast$upper = exp(fpi_forecast$upper)
+
+# using plotly in R to plot interactive visuals. 
+plot_forecast(fpi_forecast, 
+              title = 'Food Price Index Forecast for 2023', 
+              Xtitle = 'Time', 
+              Ytitle = 'Food Price Index', 
+              color = NULL, 
+              width = 2)
+```
+
+# Conclusion
+
+Canada's CPI for food (or FPI) follows a seasonal ARIMA process. Following the tests implemented to ensure meeting the assumptions, I fitted a seasonal ARIMA model to forecast FPI values for 2023. My forecasts indicates that food prices in Canada are likely to increase further in 2023. Furthermore, I plan to fit an ARCH or GARCH model for the conditional heteroscedasticity as the next step of this paper.
+
+# References
+
+Roser, Max, and Hannah Ritchie. (2021) *Food Prices*. *Our World in Data*, *ourworldindata.org*. Available at: <https://ourworldindata.org/food-prices.> (Accessed: January 18, 2023).
+
+Bogmans, C., Pescatori, A. and Prifti, E. (2021) *Four facts about soaring consumer food prices*, *IMF*. Available at: <https://www.imf.org/en/Blogs/Articles/2021/06/24/four-facts-about-soaring-consumer-food-prices> (Accessed: January 18, 2023).
+
+Fradella, A. (2022) *Behind the Numbers: What's Causing Growth in Food Prices,* Government of Canada, Statistics Canada. Available at: <https://www150.statcan.gc.ca/n1/pub/62f0014m/62f0014m2022014-eng.htm> (Accessed: January 18, 2023).
+
+Statistics Canada (2023) *Consumer price index, monthly, seasonally adjusted*, *Consumer Price Index, monthly, seasonally adjusted*. Government of Canada, Statistics Canada. Available at: <https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1810000601> (Accessed: January 18, 2023).
+
+Statistics Canada (2022) *Statistics Canada Open Licence*, *Government of Canada, Statistics Canada*. Government of Canada, Statistics Canada. Available at: <https://www.statcan.gc.ca/en/reference/licence> (Accessed: January 18, 2023).
+
+Statistics Canada (2022) *Web data service (WDS)*, *Government of Canada, Statistics Canada*. Government of Canada, Statistics Canada. Available at: <https://www.statcan.gc.ca/en/developers/wds> (Accessed: January 18, 2023).
